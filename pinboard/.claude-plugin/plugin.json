@@ -1,0 +1,26 @@
+{
+  "name": "pinboard",
+  "version": "0.2.0",
+  "description": "Session pinboard: open questions Claude asked stay above the prompt; a pane keeps branch, PRs, links, pinned docs and a memo beside the chat.",
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "jiraBase": {
+      "type": "string",
+      "title": "Jira site",
+      "description": "Your Jira site, e.g. https://your-team.atlassian.net. Issue keys the session mentions link to it. Empty: no Jira row.",
+      "default": ""
+    },
+    "jiraProjects": {
+      "type": "string",
+      "title": "Jira project keys",
+      "description": "Comma-separated project keys to pick up, e.g. WEB,APP. Any other KEY-123 (GPT-4, CVE-2024) is ignored. Empty: no Jira row.",
+      "default": ""
+    },
+    "commands": {
+      "type": "string",
+      "title": "Toolbar commands",
+      "description": "Comma-separated slash commands (without /) the pane's toolbar fills into the prompt, e.g. review,commit. Empty: no buttons.",
+      "default": ""
+    }
+  }
+}

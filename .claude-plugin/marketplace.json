@@ -1,0 +1,6 @@
+{
+  "name": "claude-mods",
+  "description": "Claude Code mods: pinboard, a session pinboard of open questions, PRs, docs and a memo.",
+  "owner": { "name": "namnameeroo" },
+  "plugins": [{ "name": "pinboard", "source": "./pinboard" }]
+}
