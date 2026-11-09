@@ -146,7 +146,7 @@ Rules:
 - When a step is done (by you or the user), call "check" with its 1-based index ("uncheck" reverts). "set" replaces the list.
 - Use "clear" only when the user asks. Questions waiting for the user's answer go to pin_questions, not here.`;
 
-const INTENT_DESCRIPTION = `Record how you understand what the user wants in this session. It is saved to ~/.claude/intent/<session id>.json and drawn as the topic tree in their pinboard pane and in the status line.
+const INTENT_DESCRIPTION = `Record how you understand what the user wants in this session. It is saved to ~/.claude/intent/<session id>.json and drawn as the topic tree in their pinboard pane.
 
 Rules:
 - On the first real work request of a session (not a greeting or a simple question), call it once BEFORE answering.
@@ -227,6 +227,11 @@ export function applyDoc(
 ): Pin[] | { deny: string } {
   const ref = String(input.ref ?? "").trim();
   if (!ref) return { deny: "pin_doc: ref (a file path or URL) is required" };
+  // a press opens it: nothing relative, no option (-a App), no app scheme (vscode://)
+  if (!/^(https?:\/\/|\/)/.test(ref))
+    return {
+      deny: "pin_doc: ref must be an absolute file path or an http(s) URL",
+    };
   const rest = pins.filter((p) => !(p.kind === "doc" && p.ref === ref));
   if (input.remove) return rest;
   return [...rest, { kind: "doc", text: input.title?.trim() || ref, ref }];
@@ -288,10 +293,13 @@ const recent = <T,>(xs: T[], n: number) =>
     .slice(0, n)
     .reverse();
 
-const rollup = (checks: unknown): string => {
+export const rollup = (checks: unknown): string => {
   if (!Array.isArray(checks) || checks.length === 0) return " ";
   const st = checks.map((c: any) => c.conclusion ?? c.state ?? "");
-  if (st.some((s) => /FAIL|ERROR/i.test(s))) return I.ciFail;
+  // GitHub's conclusions that are not a pass: FAILURE, STARTUP_FAILURE, ERROR, TIMED_OUT,
+  // CANCELLED, ACTION_REQUIRED (SKIPPED and NEUTRAL pass)
+  if (st.some((s) => /FAIL|ERROR|TIMED_OUT|CANCELLED|ACTION_REQUIRED/i.test(s)))
+    return I.ciFail;
   if (st.some((s) => /PENDING|IN_PROGRESS|QUEUED|^$/i.test(s))) return I.ciRun;
   return I.ciOk;
 };
@@ -539,10 +547,16 @@ async function collect(
       return p ? { ...b, port: Number(p[1] ?? p[2] ?? p[3]) } : b;
     }),
   );
+  // a merged or closed PR stays so: its last answer stands and gh is not asked
+  // again; a failed ask (offline, signed out, a timeout) keeps the last answer too
+  const prev = (await read($, snapA))?.prs ?? [];
   const prs = (
     await Promise.all(
       prRefs.map(async (ref): Promise<Pr | null> => {
         const [r = "", n = ""] = ref.split("#");
+        const url = `https://github.com/${r}/pull/${n}`.toLowerCase();
+        const last = prev.find((p) => p.url.toLowerCase() === url) ?? null;
+        if (last?.state === "MERGED" || last?.state === "CLOSED") return last;
         try {
           const out = await $.process.run(
             [
@@ -557,7 +571,7 @@ async function collect(
             ],
             { cwd, timeoutMs: 15_000 },
           );
-          if (out.exitCode !== 0) return null;
+          if (out.exitCode !== 0) return last;
           const j = JSON.parse(out.stdout);
           return {
             number: j.number,
@@ -569,15 +583,15 @@ async function collect(
             url: j.url,
           };
         } catch {
-          return null;
+          return last;
         }
       }),
     )
   ).filter((p): p is Pr => p !== null);
 
-  const intentRaw = await $.fs
-    .read(`${home}/.claude/intent/${sid}.json`)
-    .catch(() => "");
+  const intentRaw = home
+    ? await $.fs.read(`${home}/.claude/intent/${sid}.json`).catch(() => "")
+    : "";
   // none, broken or odd: the work card reads 없음, the rest of the pane goes on
   let tree: Node[] = [];
   try {
@@ -603,7 +617,15 @@ async function collect(
 // a failed refresh keeps the last snapshot; the next turn or tick retries
 async function refresh($: EngineInterface, jiraKey: RegExp | null) {
   const s = await collect($, jiraKey).catch(() => null);
-  if (s) await update($, snapA, () => s);
+  // refreshes may overlap: an older one finishing late does not undo a newer
+  if (s) await update($, snapA, (cur) => (cur && cur.at > s.at ? cur : s));
+}
+
+// The pane's data is gathered only while a surface draws the pane: no gh or
+// git runs with the pane closed or unplaced, nor in a headless run.
+async function sync($: EngineInterface, jiraKey: RegExp | null) {
+  const panes = await $.ui.panes().catch(() => []);
+  if (panes.some((p) => p.id === PANE && p.isPlaced)) await refresh($, jiraKey);
 }
 
 // ---------- glyphs ----------
@@ -640,8 +662,21 @@ const BG_MARK: Record<string, [string, Color?]> = {
   completed: [I.ciOk],
   failed: [I.ciFail, "error"],
 };
+// home as ~, only where the path starts with it (/Users/meow is not under /Users/me)
+const tilde = (p: string, home: string) =>
+  home && (p === home || p.startsWith(home + "/"))
+    ? "~" + p.slice(home.length)
+    : p;
 const short = (p: string, home: string) =>
-  p.replace(home, "~").replace(/^.*\/(.+\/.+)$/, "$1");
+  tilde(p, home).replace(/^.*\/(.+\/.+)$/, "$1");
+// a URL pin shows its host beside the title the model gave it
+const urlLabel = (p: Pin) =>
+  p.text === p.ref
+    ? p.text
+    : `${p.text} (${(p.ref ?? "").replace(/^https?:\/\/([^/]+).*$/, "$1")})`;
+// what a press may open in its app; anything else is only shown in Finder
+const DOC_EXT =
+  /\.(md|markdown|txt|pdf|html?|png|jpe?g|gif|svg|webp|json|csv|ya?ml|log)$/i;
 // a POSIX shell word: bare when plain, else single-quoted (' as '\'')
 const shq = (s: string) =>
   /^[\w@%+=:,./-]+$/.test(s) ? s : `'${s.replace(/'/g, `'\\''`)}'`;
@@ -725,9 +760,19 @@ export const register: Register = (on, options) => {
   const jiraKey = jiraBase
     ? jiraMatcher(String(options.jiraProjects ?? ""))
     : null;
-  const commands = list(options.commands);
+  const commands = uniq(list(options.commands));
+
+  // the pin tools serve the main conversation: a subagent's list would replace
+  // the person's, and a subagent cannot hear the answers to its questions
+  const SUBAGENT = {
+    deny: "pinboard tools are for the main conversation, not a subagent",
+  };
+  // ponytail: one open a load; a reload (an option change) may open it again
+  let autoOpened = false;
 
   on("session.start", async ($, e, next) => {
+    // headless (claude -p, the SDK): no one sees a pane, so no tools, no polling
+    if (!e.isInteractive) return next(e);
     await $.tool.register({
       name: "pin_questions",
       description: Q_DESCRIPTION,
@@ -758,16 +803,16 @@ export const register: Register = (on, options) => {
     });
     await $.command.register({
       name: "pin-clear",
-      description: "Close the pinned questions list",
+      description: "Delete the pinned questions list",
     });
     await restore($);
-    void refresh($, jiraKey);
-    void $.ui.open(PANE_OPEN);
-    $.clock.every(60_000, () => void refresh($, jiraKey));
+    void sync($, jiraKey);
+    $.clock.every(60_000, () => void sync($, jiraKey));
     return next(e);
   });
 
   on("tool.call", { tool: Q_TOOL }, async ($, e) => {
+    if (e.agentId !== undefined) return SUBAGENT;
     const input = e as unknown as PinInput;
     const out = await applyPins($, (cur) => applyQuestions(cur, input));
     if (!Array.isArray(out)) return { deny: out.deny };
@@ -778,6 +823,7 @@ export const register: Register = (on, options) => {
   });
 
   on("tool.call", { tool: NEXT_TOOL }, async ($, e) => {
+    if (e.agentId !== undefined) return SUBAGENT;
     const input = e as unknown as PinInput;
     const out = await applyPins($, (cur) => applyList(cur, "next", input));
     if (!Array.isArray(out)) return { deny: out.deny };
@@ -787,11 +833,14 @@ export const register: Register = (on, options) => {
 
   // record_intent: replaces the intent-recorder subagent (about 21k tokens a call)
   on("tool.call", { tool: INTENT_TOOL }, async ($, e) => {
+    if (e.agentId !== undefined) return SUBAGENT;
     const [sid, home, now] = await Promise.all([
       $.session.id(),
       $.env.get("HOME"),
       $.clock.now(),
     ]);
+    // unset, the path would be relative: a stray undefined/ in the project
+    if (!home) return { deny: "record_intent: HOME is not set" };
     const file = `${home}/.claude/intent/${sid}.json`;
     const raw = await $.fs.read(file).catch(() => null);
     let prev: IntentRecord | null = null;
@@ -809,12 +858,13 @@ export const register: Register = (on, options) => {
     const out = applyIntent(prev, e as unknown as IntentInput, sid, ts);
     if ("deny" in out) return { deny: out.deny };
     await $.fs.write(file, JSON.stringify(out, null, 2) + "\n");
-    void refresh($, jiraKey);
+    void sync($, jiraKey);
     const text = `intent ${prev ? "update" : "init"} 기록: ${out.current.label}`;
     return { result: text, text };
   });
 
   on("tool.call", { tool: DOC_TOOL }, async ($, e) => {
+    if (e.agentId !== undefined) return SUBAGENT;
     const input = e as unknown as DocInput;
     const out = await applyPins($, (cur) => applyDoc(cur, input));
     if (!Array.isArray(out)) return { deny: out.deny };
@@ -851,12 +901,22 @@ export const register: Register = (on, options) => {
   });
 
   on("turn.complete", async ($, e, next) => {
-    if (e.agentId === undefined) void refresh($, jiraKey);
+    if (e.agentId === undefined) void sync($, jiraKey);
     return next(e);
   });
 
   // The band: open questions only. Other mods' band stays beneath ours.
+  // It also opens the pane unasked, once, where the pane is a sidebar: a
+  // fullscreen terminal (placed from 144 columns, 110 once opened by hand).
+  // On the main screen it would sit over the transcript: /pinboard opens it.
   on("ui.render", { component: "AbovePrompt" }, async ($, e, next) => {
+    if (!autoOpened && e.viewport?.isFullscreen === true) {
+      autoOpened = true;
+      void $.ui
+        .open(PANE_OPEN)
+        .then((r) => (r.isPlaced ? sync($, jiraKey) : undefined))
+        .catch(() => {});
+    }
     const [pins, folded] = await Promise.all([
       read($, pinsA),
       read($, foldedA),
@@ -963,11 +1023,21 @@ export const register: Register = (on, options) => {
         plain
         dimColor={dim}
         onPress={async (press) => {
-          // ponytail: macOS `open` alone; xdg-open/start if the pane runs elsewhere
+          // ponytail: macOS `open` alone; xdg-open/start if the pane runs elsewhere.
+          // A document opens in its app; anything else (an app, a script, a link
+          // to one) is only shown in Finder: a pin the model made never runs code
           if (open) {
-            const o = await $.process.run(["open", text]).catch(() => null);
+            const st = await $.fs
+              .stat(text, { resolve: true })
+              .catch(() => null);
+            const isDoc = DOC_EXT.test(st?.realPath ?? text);
+            const o = await $.process
+              .run(isDoc ? ["open", text] : ["open", "-R", text])
+              .catch(() => null);
             if (o?.exitCode === 0)
-              return $.ui.toast(`opened: ${short(text, home)}`);
+              return $.ui.toast(
+                `${isDoc ? "opened" : "shown in Finder"}: ${short(text, home)}`,
+              );
           }
           const t = open ? `open ${shq(text)}` : text;
           const r = await $.ui.copy({ text: t, surface: press.surface });
@@ -1025,7 +1095,7 @@ export const register: Register = (on, options) => {
       >
         <Box columnGap={2} flexWrap="wrap">
           {commands.map((n) => (
-            <Button key={n} plain dimColor onPress={flow(n)}>
+            <Button key={`cmd:${n}`} plain dimColor onPress={flow(n)}>
               {`/${n}`}
             </Button>
           ))}
@@ -1124,7 +1194,7 @@ export const register: Register = (on, options) => {
               <Copy
                 k="cwd"
                 text={s.cwd}
-                label={s.cwd.replace(home, "~")}
+                label={tilde(s.cwd, home)}
                 dim={!!s.branch}
               />
             </Box>,
@@ -1195,7 +1265,7 @@ export const register: Register = (on, options) => {
               <Box columnGap={2} flexWrap="wrap">
                 {docPins.map((p, i) =>
                   /^https?:\/\//.test(p.ref ?? "") ? (
-                    <Link href={p.ref ?? ""} label={p.text} />
+                    <Link href={p.ref ?? ""} label={urlLabel(p)} />
                   ) : (
                     <Copy
                       k={`pin${i}`}
@@ -1244,7 +1314,7 @@ export const register: Register = (on, options) => {
               </Box>
             ) : null}
             <Box columnGap={2} flexWrap="wrap">
-              <Copy k="cwd" text={s.cwd} label={s.cwd.replace(home, "~")} />
+              <Copy k="cwd" text={s.cwd} label={tilde(s.cwd, home)} />
               <Copy k="sid" text={s.sid} label={`sid ${s.sid}`} dim />
             </Box>
           </Box>,
@@ -1342,7 +1412,7 @@ export const register: Register = (on, options) => {
           <Box flexDirection="column">
             {docPins.map((p, i) =>
               /^https?:\/\//.test(p.ref ?? "") ? (
-                <Link href={p.ref ?? ""} label={`${g(I.pin)}${p.text}`} />
+                <Link href={p.ref ?? ""} label={`${g(I.pin)}${urlLabel(p)}`} />
               ) : (
                 <Copy
                   k={`pin${i}`}

@@ -6,6 +6,7 @@ import {
   applyIntent,
   jiraMatcher,
   layoutTree,
+  rollup,
   scan,
 } from "../hooks/register";
 
@@ -36,18 +37,39 @@ const engine = (
   on: On,
   store: Record<string, unknown> = {},
   sid = () => "s1",
+  isPlaced = true, // whether a surface draws the pane
 ) => {
+  const calls = { open: 0 };
   mock.store(on, store);
   mock.clock(on);
   on("session.id", () => ({ value: sid() }));
   on("tool.register", () => ({ value: { tool: Q_TOOL } }));
   on("command.register", () => ({ value: { command: "pin-clear" } }));
-  on("ui.open", () => ({ value: { isPlaced: true } }));
+  on("ui.open", () => {
+    calls.open++;
+    return { value: { isPlaced: true } };
+  });
+  on(
+    "ui.panes",
+    () =>
+      ({
+        value: [
+          {
+            id: "pinboard",
+            title: "pinboard",
+            isShown: isPlaced,
+            isFocused: false,
+            isPlaced,
+          },
+        ],
+      }) as never,
+  );
   on("session.start", (_, e) => ({ cwd: e.cwd }));
   on("ui.render", ($, e) => {
     const { Text } = $.ui.resolve(e);
     return <Text>engine-band</Text>;
   });
+  return calls;
 };
 
 const start = ($: Engine) =>
@@ -194,7 +216,7 @@ test("scan picks PRs, Jira keys, links and touched .md from the transcript", asy
     { role: "user", text: "[Request interrupted by user]", toolUses: [] },
     {
       role: "assistant",
-      text: "WEB-123 확인. ADR-0001 참고. https://acme.atlassian.net 기획: https://acme.atlassian.net/wiki/x 설명: https://claude.ai/code/artifact/f4fdbad9-4e01-4721-badc-bd472ceb755b",
+      text: "WEB-123 확인. ADR-0001 참고. https://acme.atlassian.net 기획: https://acme.atlassian.net/wiki/x 설명: https://claude.ai/code/artifact/00000000-0000-4000-8000-000000000000",
       toolUses: [
         { tool: "Write", input: { file_path: "/repo/docs/plan.md" } },
         { tool: "Read", input: { file_path: "/repo/README.md" } },
@@ -207,7 +229,7 @@ test("scan picks PRs, Jira keys, links and touched .md from the transcript", asy
   expect(r.jira).toEqual(["WEB-123"]);
   expect(r.links).toEqual([
     "https://acme.atlassian.net/wiki/x",
-    "https://claude.ai/code/artifact/f4fdbad9-4e01-4721-badc-bd472ceb755b", // the current artifact URL form
+    "https://claude.ai/code/artifact/00000000-0000-4000-8000-000000000000", // the current artifact URL form
   ]);
   expect(r.docs).toEqual([
     { path: "/repo/docs/plan.md", kind: "new", tag: "repo" },
@@ -295,6 +317,15 @@ test("a local doc pin opens on press; where `open` fails, `open '<path>'` is cop
   expect(copied).toBe("open '/Users/me/toys/My Doc.html'");
   expect(toasts.at(-1)).toBe("copied: open '/Users/me/toys/My Doc.html'");
   await ui.unmount();
+
+  // not a document (an app, a script): shown in Finder, never run
+  exitCode = 0;
+  await call($, DOC_TOOL, { ref: "/Users/me/toys/My Doc.html", remove: true });
+  await call($, DOC_TOOL, { ref: "/Users/me/toys/run", title: "설계 문서" });
+  const ui2 = await $.ui.mount(PANE);
+  await ui2.press({ key: "cp:pin0" });
+  expect(ran.at(-1)).toEqual(["open", "-R", "/Users/me/toys/run"]);
+  await ui2.unmount();
 });
 
 test("the memo docks to the bottom of a dock pane, not of an inline one", async ($, on) => {
@@ -566,19 +597,20 @@ test("a PR row: #number links, the title keeps its line, the state line shows wh
       comments: [{}, {}],
     },
   };
+  const asked: string[] = [];
+  let ghOk = true;
   // the stand-in answers { value } at runtime; its typing wants the bare result
-  on(
-    "process.run",
-    (_, e) =>
-      ({
-        value: {
-          exitCode: 0,
-          stdout: JSON.stringify(gh[e.argv[3] ?? ""]),
-          stderr: "",
-          isStdoutTruncated: false,
-        },
-      }) as never,
-  );
+  on("process.run", (_, e) => {
+    asked.push(e.argv[3] ?? "");
+    return {
+      value: {
+        exitCode: ghOk ? 0 : 1,
+        stdout: ghOk ? JSON.stringify(gh[e.argv[3] ?? ""]) : "",
+        stderr: "",
+        isStdoutTruncated: false,
+      },
+    } as never;
+  });
   await start($);
   await call($, Q_TOOL, { action: "clear" }); // the start's refresh has landed
 
@@ -611,6 +643,21 @@ test("a PR row: #number links, the title keeps its line, the state line shows wh
   );
   expect(open).toContain("  2");
   await ui.unmount();
+
+  // a later refresh: a merged PR is not asked again; a failed ask keeps the last answer
+  ghOk = false;
+  await $.command.run({
+    command: "pinboard",
+    args: "",
+    origin: { kind: "composer" },
+    presentation: { isFullscreen: false, columns: 80 },
+  });
+  await call($, Q_TOOL, { action: "clear" });
+  expect(asked.filter((n) => n === "45")).toHaveLength(1);
+  expect(asked.filter((n) => n === "57")).toHaveLength(2);
+  const again = await $.ui.mount(PANE);
+  expect((await again.find({ key: "pr:57" }))?.text).toContain("[open]");
+  await again.unmount();
 });
 
 // a background Bash as the transcript holds it: the call, its result, its notification
@@ -820,3 +867,165 @@ test("R5 /clear starts the pins over; an in-app resume brings that session's bac
   expect((await ui.find({ key: "q:0" }))?.text).toBe("[ ] 1. s2 질문");
   await ui.unmount();
 });
+
+// ---------- public-install review fixes (P1~P8): each failed before its fix ----------
+
+test("P1 the pin tools refuse a subagent: the main conversation's lists stay", async ($, on) => {
+  engine(on);
+  await start($);
+  await call($, NEXT_TOOL, { action: "set", items: ["메인"] });
+  for (const tool of [Q_TOOL, NEXT_TOOL, DOC_TOOL, INTENT_TOOL]) {
+    const r = await $.tool.call({
+      tool,
+      action: "set",
+      items: ["sub"],
+      ref: "/r/a.md",
+      label: "sub",
+      agentId: "a1",
+    } as never);
+    expect(typeof r.deny).toBe("string");
+  }
+  const ui = await $.ui.mount(BAND);
+  expect(await ui.find({ key: "q:0" })).toBeUndefined();
+  await ui.unmount();
+  expect(
+    (await call($, NEXT_TOOL, { action: "check", indexes: [1] })).text,
+  ).toBe("pinned 1 item(s), 1 checked");
+});
+
+test("P2 a headless run (claude -p) registers no tool and opens no pane", async ($, on) => {
+  mock.store(on, {});
+  mock.clock(on);
+  on("session.id", () => ({ value: "s1" }));
+  let registered = 0;
+  on("tool.register", () => {
+    registered++;
+    return { value: { tool: Q_TOOL } };
+  });
+  on("command.register", () => ({ value: { command: "pin-clear" } }));
+  let opened = 0;
+  on("ui.open", () => {
+    opened++;
+    return { value: { isPlaced: true } };
+  });
+  on("session.start", (_, e) => ({ cwd: e.cwd }));
+  await $.session.start({ cwd: "/", surface: null, isInteractive: false });
+  expect([registered, opened]).toEqual([0, 0]);
+});
+
+test("P3 the pane opens unasked once, and only where it is a sidebar (fullscreen)", async ($, on) => {
+  const calls = engine(on);
+  await start($);
+  expect(calls.open).toBe(0); // session.start opens nothing
+  const view = (isFullscreen: boolean) =>
+    ({ ...BAND, viewport: { columns: 160, rows: 40, isFullscreen } }) as never;
+  let ui = await $.ui.mount(view(false)); // the main screen: it would sit inline
+  await ui.unmount();
+  await call($, Q_TOOL, { action: "clear" });
+  expect(calls.open).toBe(0);
+  for (let i = 0; i < 2; i++) {
+    ui = await $.ui.mount(view(true));
+    await ui.unmount();
+  }
+  await call($, Q_TOOL, { action: "clear" });
+  expect(calls.open).toBe(1);
+});
+
+test("P4 record_intent with no HOME refuses instead of writing under the project", async ($, on) => {
+  engine(on);
+  mock.env(on, {});
+  let wrote = 0;
+  on("fs.write", () => {
+    wrote++;
+    return { value: undefined };
+  });
+  on("fs.read", () => {
+    throw new Error("ENOENT");
+  });
+  await start($);
+  const r = await call($, INTENT_TOOL, { label: "A" });
+  expect(r.deny).toContain("HOME");
+  expect(wrote).toBe(0);
+});
+
+test("P5 pin_doc takes an absolute path or an http(s) URL only", () => {
+  for (const ref of ["-a Calculator", "docs/spec.md", "vscode://x/y", "~/a.md"])
+    expect("deny" in (applyDoc([], { ref }) as object)).toBe(true);
+  for (const ref of ["/r/a.md", "https://x.io/a", "http://localhost:3000/"])
+    expect(Array.isArray(applyDoc([], { ref }))).toBe(true);
+});
+
+test("P6 CI: a timed-out, cancelled or blocked check is not a pass", () => {
+  const fail = rollup([{ conclusion: "FAILURE" }]);
+  for (const c of [
+    "TIMED_OUT",
+    "CANCELLED",
+    "ACTION_REQUIRED",
+    "STARTUP_FAILURE",
+  ])
+    expect(rollup([{ conclusion: "SUCCESS" }, { conclusion: c }])).toBe(fail);
+  expect(rollup([{ conclusion: "SUCCESS" }, { conclusion: "SKIPPED" }])).toBe(
+    rollup([{ conclusion: "SUCCESS" }]),
+  );
+});
+
+test("P7 no pane drawn, no refresh: gh and git stay idle", async ($, on) => {
+  engine(on, {}, undefined, false);
+  mock.env(on, { HOME: "/Users/me" });
+  on("session.cwd", () => ({ value: "/Users/me/toys" }));
+  on("session.root", () => ({ value: "/Users/me/toys" }));
+  on("session.repo", () => ({ value: { root: "/Users/me/toys" } }) as never);
+  on("session.messages", () => ({
+    value: [say("https://github.com/o/r/pull/1")],
+  }));
+  on("fs.read", () => ({ value: "" }));
+  let runs = 0;
+  on("process.run", () => {
+    runs++;
+    return {
+      value: { exitCode: 1, stdout: "", stderr: "", isStdoutTruncated: false },
+    } as never;
+  });
+  await start($);
+  await call($, Q_TOOL, { action: "clear" });
+  expect(runs).toBe(0);
+});
+
+test(
+  "P8 options: the Jira row links to jiraBase, the toolbar fills each command once",
+  {
+    options: {
+      jiraBase: "https://acme.atlassian.net/",
+      jiraProjects: "web",
+      commands: "/review,commit,review,hist",
+    },
+  },
+  async ($, on) => {
+    engine(on);
+    mock.env(on, { HOME: "/Users/me" });
+    on("session.cwd", () => ({ value: "/Users/me/toys" }));
+    on("session.root", () => ({ value: "/Users/me/toys" }));
+    on("session.repo", () => ({ value: null }));
+    on("session.messages", () => ({ value: [say("WEB-12 확인")] }));
+    on("fs.read", () => ({ value: "" }));
+    let filled = "";
+    on("prompt.fill", (_, e) => {
+      filled = e.text;
+      return { isFilled: true } as never;
+    });
+    await start($);
+    await call($, Q_TOOL, { action: "clear" }); // the start's refresh has landed
+
+    const ui = await $.ui.mount(PANE);
+    const jira = await ui.find({ type: "Link", text: "WEB-12" });
+    expect(jira?.props.href).toBe("https://acme.atlassian.net/browse/WEB-12");
+    expect(await ui.findAll({ type: "Button", text: "/review" })).toHaveLength(
+      1,
+    );
+    await ui.press({ key: "cmd:review" });
+    expect(filled).toBe("/review ");
+    await ui.press({ key: "hist" }); // a command named hist leaves the toggle alone
+    expect(await ui.find({ key: "card:hist" })).toBeDefined();
+    await ui.unmount();
+  },
+);

@@ -1,19 +1,22 @@
 {
   "name": "pinboard",
-  "version": "0.2.0",
-  "description": "Session pinboard: open questions Claude asked stay above the prompt; a pane keeps branch, PRs, links, pinned docs and a memo beside the chat.",
+  "version": "0.3.0",
+  "description": "Session pinboard: open questions Claude asked stay above the prompt; a pane keeps branch, PRs, links, pinned docs and a memo beside the chat. UI labels in Korean; icons need a Nerd Font.",
+  "author": { "name": "namnameeroo" },
+  "repository": "https://github.com/namnameeroo/claude-mods",
+  "license": "MIT",
   "types": "./types/index.d.ts",
   "userConfig": {
     "jiraBase": {
       "type": "string",
       "title": "Jira site",
-      "description": "Your Jira site, e.g. https://your-team.atlassian.net. Issue keys the session mentions link to it. Empty: no Jira row.",
+      "description": "Your Jira site, e.g. https://your-team.atlassian.net. Issue keys the session mentions link to it. Needs jiraProjects too; either empty: no Jira row.",
       "default": ""
     },
     "jiraProjects": {
       "type": "string",
       "title": "Jira project keys",
-      "description": "Comma-separated project keys to pick up, e.g. WEB,APP. Any other KEY-123 (GPT-4, CVE-2024) is ignored. Empty: no Jira row.",
+      "description": "Comma-separated project keys to pick up, e.g. WEB,APP. Any other KEY-123 (GPT-4, CVE-2024) is ignored. Needs jiraBase too; either empty: no Jira row.",
       "default": ""
     },
     "commands": {

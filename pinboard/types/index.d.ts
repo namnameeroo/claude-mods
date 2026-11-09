@@ -14,7 +14,7 @@ export type PinInput = {
 
 export type DocInput = { ref: string; title?: string; remove?: boolean };
 
-// ~/.claude/intent/<sid>.json, the schema intent-recorder wrote (/intent and the status line read it)
+// ~/.claude/intent/<sid>.json: what record_intent writes and the work card reads
 export type IntentInput = {
   label: string;
   what?: string;
