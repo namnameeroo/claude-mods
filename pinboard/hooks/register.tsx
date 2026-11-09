@@ -91,6 +91,19 @@ const snapA = atom(
 const historyA = atom({ plugin: "pinboard", key: "history" } as const, false);
 const foldedA = atom({ plugin: "pinboard", key: "folded" } as const, false);
 const memoA = atom({ plugin: "pinboard", key: "memo" } as const, false);
+const paneFoldedA = atom(
+  { plugin: "pinboard", key: "paneFolded" } as const,
+  false,
+);
+
+// Pure: whether a close folds the pane instead. The person's close mark (or
+// ctrl+x x) on an inline pane, which sits over the transcript, folds it to one
+// row first and closes it once folded; docked, or a plugin's own close, closes.
+export const markFolds = (
+  origin: string,
+  isInline: boolean,
+  isFolded: boolean,
+) => origin === "person" && isInline && !isFolded;
 
 // ---------- tools ----------
 
@@ -769,6 +782,8 @@ export const register: Register = (on, options) => {
   };
   // ponytail: one open a load; a reload (an option change) may open it again
   let autoOpened = false;
+  // where the pane was last drawn; ponytail: one value for every surface
+  let isInlineNow = false;
 
   on("session.start", async ($, e, next) => {
     // headless (claude -p, the SDK): no one sees a pane, so no tools, no polling
@@ -873,7 +888,16 @@ export const register: Register = (on, options) => {
     return { result: text, text };
   });
 
+  // answered without next, the pane stays open, folded instead
+  on("ui.close", { id: PANE }, async ($, e, next) => {
+    const isFolded = await read($, paneFoldedA);
+    if (!markFolds(e.origin.kind, isInlineNow, isFolded)) return next(e);
+    await update($, paneFoldedA, () => true);
+    return { value: undefined };
+  });
+
   on("command.run", { command: "pinboard" }, async ($) => {
+    await update($, paneFoldedA, () => false);
     await $.ui.open(PANE_OPEN);
     void refresh($, jiraKey);
     return { text: "pinboard pane opened." };
@@ -941,11 +965,12 @@ export const register: Register = (on, options) => {
       return <Text dimColor>pinboard: no mobile layout</Text>;
     }
     const { Box, Text, Button, Input, Link } = $.ui.resolve(e);
-    const [s, pins, history, memoOpen] = await Promise.all([
+    const [s, pins, history, memoOpen, paneFolded] = await Promise.all([
       read($, snapA),
       read($, pinsA),
       read($, historyA),
       read($, memoA),
+      read($, paneFoldedA),
     ]);
     if (!s)
       return (
@@ -955,6 +980,7 @@ export const register: Register = (on, options) => {
       );
     const w = e.props.bodyColumns - 6; // inside a card's border, padding and body indent
     const isDock = e.props.placement === "dock";
+    isInlineNow = !isDock;
     const home = (await $.env.get("HOME")) ?? "";
     const docPins = pins.filter((p) => p.kind === "doc");
     const nexts = pins.filter((p) => p.kind === "next");
@@ -1178,25 +1204,59 @@ export const register: Register = (on, options) => {
       );
       const cur = s.tree.find((n) => n.isCurrent);
       const firstOpen = nexts.findIndex((n) => !n.isDone);
+      // folded (접기 or the close mark): one row, where and what; 펼치기 at the
+      // right end under the close mark, which now closes the pane
+      if (paneFolded)
+        return (
+          <Box justifyContent="space-between" columnGap={2}>
+            <Text dimColor wrap="truncate-end">
+              {[s.branch || tilde(s.cwd, home), cur?.label]
+                .filter(Boolean)
+                .join("  ·  ")}
+            </Text>
+            <Box flexShrink={0}>
+              <Button
+                key="pane-unfold"
+                plain
+                onPress={() => void update($, paneFoldedA, () => false)}
+              >
+                ▸ 펼치기
+              </Button>
+            </Box>
+          </Box>
+        );
       return (
         <Box flexDirection="column">
           {line(
             "session",
             "세션",
-            <Box columnGap={2}>
-              {s.branch ? (
+            // 접기 at the top row's right end, under the frame's close mark
+            <Box flexGrow={1} justifyContent="space-between" columnGap={2}>
+              <Box columnGap={2}>
+                {s.branch ? (
+                  <Copy
+                    k="branch"
+                    text={s.branch}
+                    label={`${g(I.branch)}${s.branch}`}
+                  />
+                ) : null}
                 <Copy
-                  k="branch"
-                  text={s.branch}
-                  label={`${g(I.branch)}${s.branch}`}
+                  k="cwd"
+                  text={s.cwd}
+                  label={tilde(s.cwd, home)}
+                  dim={!!s.branch}
                 />
-              ) : null}
-              <Copy
-                k="cwd"
-                text={s.cwd}
-                label={tilde(s.cwd, home)}
-                dim={!!s.branch}
-              />
+              </Box>
+              <Box flexShrink={0}>
+                <Button
+                  key="pane-fold"
+                  plain
+                  dimColor
+                  onPress={() => void update($, paneFoldedA, () => true)}
+                >
+                  ▾ 접기
+                </Button>
+              </Box>
             </Box>,
           )}
           {s.bg.length > 0 &&

@@ -101,6 +101,7 @@ declare module "claude-code" {
       history: boolean;
       folded: boolean; // the questions band shows its header alone
       memo: boolean; // an inline pane shows the memo
+      paneFolded: boolean; // an inline pane shows one row
     };
   }
 }

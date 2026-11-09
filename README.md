@@ -8,7 +8,7 @@ A session pinboard. The UI labels are in Korean.
 
 - **Questions band**: when Claude asks you two or more questions in one reply, they stay above the prompt as a checklist. Press an item to check it; `접기`/`펼치기` (or `0` from an empty prompt) folds the list to its header; `/pin-clear` deletes it.
 - **Pane**: the session's branch and folder, background tasks (with their ports), the work tree Claude records, next steps, PRs with CI and review state, Jira keys and links, pinned and touched docs, and a memo.
-  - It opens by itself only in a fullscreen terminal wide enough to sit beside the chat (144 columns, or 110 once you have opened it with `/pinboard`). Anywhere else `/pinboard` opens it: on the main screen (tmux, `CLAUDE_CODE_NO_FLICKER=0`) it sits above the prompt, one row per section.
+  - It opens by itself only in a fullscreen terminal wide enough to sit beside the chat (144 columns, or 110 once you have opened it with `/pinboard`). Anywhere else `/pinboard` opens it: on the main screen (tmux, `CLAUDE_CODE_NO_FLICKER=0`) it sits above the prompt, one row per section. There its close mark (or `▾ 접기`) folds it to one row first; `▸ 펼치기` unfolds it, and the mark on the folded row closes it.
   - Its data (git, `gh pr view` for the PRs the session mentions) is refreshed after each turn and every minute, only while the pane is drawn. A merged or closed PR is not asked again.
 - **Pinned docs**: pressing a local document (md, txt, pdf, html, images, json, csv, yaml) opens it with macOS `open`; anything else is only shown in Finder, never run. Elsewhere, or when `open` fails, it copies `open <path>`.
 

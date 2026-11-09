@@ -6,6 +6,7 @@ import {
   applyIntent,
   jiraMatcher,
   layoutTree,
+  markFolds,
   rollup,
   scan,
 } from "../hooks/register";
@@ -1029,3 +1030,41 @@ test(
     await ui.unmount();
   },
 );
+
+test("P9 inline, 접기 folds the pane to one row; 펼치기 brings it back; no 닫기 beside the mark", async ($, on) => {
+  engine(on);
+  mock.env(on, { HOME: "/Users/me" });
+  on("session.cwd", () => ({ value: "/Users/me/toys" }));
+  on("session.root", () => ({ value: "/Users/me/toys" }));
+  on("session.repo", () => ({ value: null }));
+  on("session.messages", () => ({ value: [] }));
+  on("fs.read", () => ({ value: "" }));
+  await start($);
+  await call($, Q_TOOL, { action: "clear" }); // the start's refresh has landed
+
+  const ui = await $.ui.mount({
+    ...PANE,
+    props: { ...PANE.props, placement: "inline" },
+  });
+  // 접기 sits on the top row, under the frame's close mark
+  expect((await ui.find({ key: "line:session" }))?.text).toContain("접기");
+  await ui.press({ key: "pane-fold" });
+  expect(await ui.find({ key: "cp:cwd" })).toBeUndefined(); // one row left
+  expect((await ui.find({ key: "pane-unfold" }))?.text).toContain("펼치기");
+  expect(await ui.find({ key: "pane-close" })).toBeUndefined(); // the mark closes it now
+  await ui.press({ key: "pane-unfold" });
+  expect((await ui.find({ key: "cp:cwd" }))?.text).toBe("~/toys");
+  await ui.unmount();
+
+  const dock = await $.ui.mount(PANE); // docked: no fold, the mark closes it
+  expect(await dock.find({ key: "pane-fold" })).toBeUndefined();
+  await dock.unmount();
+});
+
+test("P10 the close mark: inline it folds first and closes once folded; docked it closes", () => {
+  expect(markFolds("person", true, false)).toBe(true); // unfolded inline: fold
+  expect(markFolds("person", true, true)).toBe(false); // folded: close
+  expect(markFolds("person", false, false)).toBe(false); // docked: close
+  expect(markFolds("plugin", true, false)).toBe(false); // $.ui.close: a real close
+  expect(markFolds("unload", true, false)).toBe(false);
+});
