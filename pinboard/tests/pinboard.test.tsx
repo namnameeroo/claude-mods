@@ -1097,6 +1097,65 @@ test("R5 /clear starts the pins over; an in-app resume brings that session's bac
 
 // ---------- public-install review fixes (P1~P8): each failed before its fix ----------
 
+test("R6 PRs, Jira keys and links come from message text, not tool output", () => {
+  // a grep over test fixtures: text that flowed past, not something the session worked on
+  const dump =
+    "https://x.atlassian.net/wiki/1 https://github.com/o/r/pull/9 OPS-3";
+  const msgs = [
+    {
+      role: "user",
+      text: "https://github.com/acme/web/pull/45 리뷰 반영",
+      toolUses: [],
+    },
+    {
+      role: "assistant",
+      text: "WEB-7 생성: https://acme.atlassian.net/browse/WEB-7",
+      toolUses: [
+        {
+          tool: "Bash",
+          tool_use_id: "tu-g",
+          input: { command: "grep -rn https tests" },
+          text: dump,
+        },
+      ],
+    },
+    {
+      role: "user",
+      text: "",
+      toolUses: [],
+      toolResults: [{ tool_use_id: "tu-g", text: dump }],
+    },
+    // a slash command's arguments: typed, though the engine wraps them in tags
+    {
+      role: "user",
+      text: "<command-message>review</command-message>\n<command-name>/review</command-name>\n<command-args>https://github.com/acme/web/pull/46 https://acme.atlassian.net/wiki/y</command-args>",
+      toolUses: [],
+    },
+  ] as unknown as SessionMessage[];
+  const r = scan(msgs, "/repo", "main", KEYS);
+  expect(r.prRefs).toEqual(["acme/web#45", "acme/web#46"]);
+  expect(r.jira).toEqual(["WEB-7"]);
+  expect(r.links).toEqual([
+    "https://acme.atlassian.net/browse/WEB-7",
+    "https://acme.atlassian.net/wiki/y",
+  ]);
+});
+
+test("R7 a task notification inside a tool result still ends its task", () => {
+  const msgs = [
+    { role: "assistant", text: "", toolUses: [bgUse("b3", "pnpm build")] },
+    {
+      role: "user",
+      text: "",
+      toolUses: [],
+      toolResults: [
+        { tool_use_id: "tu-other", text: `ok\n${notice("b3", "completed")}` },
+      ],
+    },
+  ] as unknown as SessionMessage[];
+  expect(scan(msgs, "/repo", "main").bg[0]?.status).toBe("completed");
+});
+
 test("P1 the pin tools refuse a subagent: the main conversation's lists stay", async ($, on) => {
   engine(on);
   await start($);

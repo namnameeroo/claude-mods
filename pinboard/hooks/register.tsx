@@ -396,27 +396,24 @@ export function scan(
   branch: string,
   jiraKey: RegExp | null = null,
 ) {
-  const corpus = msgs
-    .flatMap((m) => [
-      m.text,
-      ...m.toolUses.map((t) => t.text ?? ""),
-      ...(m.toolResults ?? []).map((r) => r.text ?? ""),
-    ])
-    .join("\n");
+  // message text: prompts, replies and what the engine writes into the chat
+  // (slash command args, `!` output, task notices). Tool output (a grep over
+  // fixtures, a branch list) is text that flowed past and would crowd it out.
+  const said = msgs.map((m) => m.text).join("\n");
 
-  // every PR this session touched or mentioned: URLs in prompts, replies, tool output
+  // the last 5 PRs mentioned in message text
   const prRefs = recent(
-    [...corpus.matchAll(/github\.com\/([\w.-]+\/[\w.-]+)\/pull\/(\d+)/g)].map(
+    [...said.matchAll(/github\.com\/([\w.-]+\/[\w.-]+)\/pull\/(\d+)/g)].map(
       (m) => `${m[1]}#${m[2]}`,
     ),
     5,
   );
   // the branch last: the latest mention, so its key always stays
   const jira = jiraKey
-    ? recent(`${corpus} ${branch}`.match(jiraKey) ?? [], 3)
+    ? recent(`${said} ${branch}`.match(jiraKey) ?? [], 3)
     : [];
   const links = recent(
-    [...corpus.matchAll(/https?:\/\/[^\s)>\]"'`]+/g)]
+    [...said.matchAll(/https?:\/\/[^\s)<>\]"'`]+/g)] // `<`: a closing tag right after
       .map((m) => m[0])
       .filter(
         (u) =>
@@ -459,7 +456,15 @@ export function scan(
   const docs = [...docMap.values()].slice(-6);
 
   // background Bash: its result names the task and output file; a later
-  // <task-notification> carrying its tool-use-id says how it ended
+  // <task-notification> carrying its tool-use-id says how it ended. The notice
+  // can arrive inside a tool result, so this reads tool output too.
+  const corpus = msgs
+    .flatMap((m) => [
+      m.text,
+      ...m.toolUses.map((t) => t.text ?? ""),
+      ...(m.toolResults ?? []).map((r) => r.text ?? ""),
+    ])
+    .join("\n");
   const ended = new Map<string, string>(
     [
       ...corpus.matchAll(
