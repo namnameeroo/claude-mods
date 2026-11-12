@@ -396,6 +396,9 @@ export function scan(
   branch: string,
   jiraKey: RegExp | null = null,
 ) {
+  // prompts and replies: what the session talked about. Tool output (a grep over
+  // fixtures, a branch list) is text that flowed past and would crowd it out.
+  const said = msgs.map((m) => m.text).join("\n");
   const corpus = msgs
     .flatMap((m) => [
       m.text,
@@ -404,19 +407,19 @@ export function scan(
     ])
     .join("\n");
 
-  // every PR this session touched or mentioned: URLs in prompts, replies, tool output
+  // every PR this session mentioned: URLs in prompts and replies
   const prRefs = recent(
-    [...corpus.matchAll(/github\.com\/([\w.-]+\/[\w.-]+)\/pull\/(\d+)/g)].map(
+    [...said.matchAll(/github\.com\/([\w.-]+\/[\w.-]+)\/pull\/(\d+)/g)].map(
       (m) => `${m[1]}#${m[2]}`,
     ),
     5,
   );
   // the branch last: the latest mention, so its key always stays
   const jira = jiraKey
-    ? recent(`${corpus} ${branch}`.match(jiraKey) ?? [], 3)
+    ? recent(`${said} ${branch}`.match(jiraKey) ?? [], 3)
     : [];
   const links = recent(
-    [...corpus.matchAll(/https?:\/\/[^\s)>\]"'`]+/g)]
+    [...said.matchAll(/https?:\/\/[^\s)>\]"'`]+/g)]
       .map((m) => m[0])
       .filter(
         (u) =>

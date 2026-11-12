@@ -1062,6 +1062,42 @@ test("R4 Jira keys: the configured projects only; none configured, none picked",
   expect(jiraMatcher(" , 1A, a-b")).toBeNull(); // nothing a project key can be
 });
 
+test("R6 PRs, Jira keys and links come from prompts and replies, not tool output", () => {
+  // a grep over test fixtures or a branch list printed by git: text that flowed
+  // past, not something the session worked on
+  const dump =
+    "https://x.atlassian.net/wiki/1 https://github.com/o/r/pull/9 OPS-3";
+  const msgs = [
+    {
+      role: "user",
+      text: "https://github.com/acme/web/pull/45 리뷰 반영",
+      toolUses: [],
+    },
+    {
+      role: "assistant",
+      text: "WEB-7 생성: https://acme.atlassian.net/browse/WEB-7",
+      toolUses: [
+        {
+          tool: "Bash",
+          tool_use_id: "tu-g",
+          input: { command: "grep -rn https tests" },
+          text: dump,
+        },
+      ],
+    },
+    {
+      role: "user",
+      text: "",
+      toolUses: [],
+      toolResults: [{ tool_use_id: "tu-g", text: dump }],
+    },
+  ] as unknown as SessionMessage[];
+  const r = scan(msgs, "/repo", "main", KEYS);
+  expect(r.prRefs).toEqual(["acme/web#45"]);
+  expect(r.jira).toEqual(["WEB-7"]);
+  expect(r.links).toEqual(["https://acme.atlassian.net/browse/WEB-7"]);
+});
+
 test("R5 /clear starts the pins over; an in-app resume brings that session's back", async ($, on) => {
   // mod events only: a managed guard keeps classic.* (SessionStart) from user mods
   let sid = "s1";
