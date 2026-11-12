@@ -1,6 +1,6 @@
 {
   "name": "pinboard",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "Session pinboard: open questions Claude asked stay above the prompt; a pane keeps branch, PRs, links, pinned docs and a memo beside the chat. UI labels in Korean; icons need a Nerd Font.",
   "author": { "name": "namnameeroo" },
   "repository": "https://github.com/namnameeroo/claude-mods",

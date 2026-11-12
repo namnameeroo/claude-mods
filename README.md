@@ -49,7 +49,7 @@ Each section is a card. An empty one says `없음` (none); the number at its top
 | **다음 할 일** (next steps) | A checklist Claude leaves when it finishes a piece of work, with done/total | Claude's `pin_next_steps` calls | Check or uncheck a step |
 | **PR · 링크** (PRs and links) | The last 5 GitHub PRs the session mentioned, with state, CI, review and comment count; your Jira keys; Figma, Notion, Atlassian and Claude artifact links | URLs in prompts, replies and tool output; `gh pr view` for the PR states | Open it |
 | **문서** (docs) | Pinned docs first (a pin icon, the title Claude gave it), then the `.md` files Claude read or wrote, tagged `repo`, `out` (outside the repo) or `tmp` | Claude's `pin_doc` calls; Read and Write calls | Open a pinned doc |
-| **메모** (memo) | Your own note for the session | You: type, then Enter (`Enter 저장`) | — |
+| **한줄메모** (memo) | Your own note for the session, with its length (`N자`) and `저장 안 됨` while what you typed is not saved. It grows with the text to 10 rows (6 inline), then `▾ N줄 더` says how much is below. It is framed like the other cards; while you edit it (`한줄메모 편집 중`) the frame gives way to heavy lit rules above and below and the text takes the pane's whole width | You: `ctrl+x tab` puts you in it; type, then Enter (`⏎ 저장`); an empty memo and Enter deletes it; Esc leaves it | Copy it whole (`복사`) |
 
 Under the cards, `▸ 히스토리 N` unfolds your last 10 prompts, and the [`commands` option](#options) adds buttons that fill a slash command into the prompt.
 
@@ -73,7 +73,7 @@ CI and review show only while the PR is open or a draft. A merged or closed PR i
 Narrower than 144 columns, or on the main screen (tmux, `CLAUDE_CODE_NO_FLICKER=0`), the pane would sit over the transcript, so it does not open by itself: `/pinboard` opens it above the prompt with one row per section (`세션`, `bg`, `작업`, `다음`, `PR`, `문서`). Each row keeps the essentials: the running count and ports, the current task, the first open step, PR states, pinned docs, and counts for links and found docs. An empty section is left out.
 
 - `▾ 접기` or the frame's close mark folds it to one row (branch and current task); `▸ 펼치기` unfolds it, and the close mark on the folded row closes it.
-- `▸ 메모` opens the memo here.
+- `▸ 한줄메모` opens the memo here.
 - Once you have opened it with `/pinboard`, it docks beside the chat from 110 columns.
 
 ### More details
@@ -96,9 +96,9 @@ The model decides when to call them, so a section can stay empty for a while. As
 ### What it keeps
 
 - `~/.claude/intent/<session id>.json`: the work tree `record_intent` writes (your task descriptions, in plain text).
-- The plugin's store, a JSON file under Claude Code's configuration folder: each session's pins and memo, so `--resume` brings them back.
+- The plugin's store, `~/.claude/plugins/store/pinboard_*.json`: each session's pins and memo (on Enter), and the memo as you type it until Enter, so `--resume` brings them back. A session's entries are deleted once it has not been started for 30 days.
 
-Neither is cleaned up automatically; delete the files or uninstall the plugin when you no longer want them.
+The intent files are not cleaned up automatically; delete them or uninstall the plugin when you no longer want them.
 
 ### Options
 

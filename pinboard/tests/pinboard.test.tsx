@@ -9,6 +9,7 @@ import {
   markFolds,
   rollup,
   scan,
+  wrapRows,
 } from "../hooks/register";
 
 const KEYS = jiraMatcher("WEB, app,OPS,PM,DATA");
@@ -24,6 +25,7 @@ const BAND = {
   surface: "terminal",
   props: {
     hasSurvey: false,
+    isCollapsed: false,
     isWorking: false,
     maxRows: 10,
     bodyColumns: 60,
@@ -41,7 +43,17 @@ const engine = (
   isPlaced = true, // whether a surface draws the pane
 ) => {
   const calls = { open: 0 };
-  mock.store(on, store);
+  // $.store over `store` itself, so a test reads back what the plugin wrote
+  on("store.get", (_, e) => ({ value: store[e.key] }));
+  on("store.set", (_, e) => {
+    store[e.key] = JSON.parse(JSON.stringify(e.value));
+    return { value: undefined as never };
+  });
+  on("store.delete", (_, e) => {
+    delete store[e.key];
+    return { value: undefined as never };
+  });
+  on("store.keys", () => ({ value: Object.keys(store) }));
   mock.clock(on);
   on("session.id", () => ({ value: sid() }));
   on("tool.register", () => ({ value: { tool: Q_TOOL } }));
@@ -274,7 +286,7 @@ test("the pane: empty sections read 없음, a pinned doc shows title and path", 
   expect((await ui.findAll({ type: "Text", text: "없음" })).length).toBe(3); // 작업, 다음 할 일, PR · 링크
   expect((await ui.find({ key: "cp:pin0" }))?.text).toContain("스펙");
   expect((await ui.find({ key: "cp:pin0" }))?.text).toContain("docs/spec.md");
-  expect(await ui.find({ text: /──/ })).toBeUndefined();
+  expect(await ui.find({ text: /──/ })).toBeUndefined(); // frames, not ruled rows
   await ui.unmount();
 });
 
@@ -342,7 +354,7 @@ test("the memo docks to the bottom of a dock pane, not of an inline one", async 
 
   let ui = await $.ui.mount(PANE);
   expect((await ui.find({ type: "Box" }))?.props.minHeight).toBe(40);
-  expect((await ui.find({ key: "memo-dock" }))?.text).toContain("메모");
+  expect((await ui.find({ key: "memo-dock" }))?.text).toContain("한줄메모");
   await ui.unmount();
 
   ui = await $.ui.mount({
@@ -350,6 +362,220 @@ test("the memo docks to the bottom of a dock pane, not of an inline one", async 
     props: { ...PANE.props, placement: "inline" },
   });
   expect((await ui.find({ type: "Box" }))?.props.minHeight).toBeUndefined();
+  await ui.unmount();
+});
+
+test("the memo counts what is typed, marks it unsaved until Enter, and copies it whole", async ($, on) => {
+  engine(on);
+  mock.env(on, { HOME: "/Users/me" });
+  on("session.cwd", () => ({ value: "/Users/me/toys" }));
+  on("session.root", () => ({ value: "/Users/me/toys" }));
+  on("session.repo", () => ({ value: null }));
+  on("session.messages", () => ({ value: [] }));
+  on("fs.read", () => ({ value: "" }));
+  let copied = "";
+  on("ui.copy", (_, e) => {
+    copied = e.text;
+    return { value: { isCopied: true } as never };
+  });
+  const toasts: string[] = [];
+  on("ui.toast", (_, e) => {
+    toasts.push(e.text);
+    return { value: undefined as never };
+  });
+  await start($);
+  await call($, Q_TOOL, { action: "clear" });
+
+  const ui = await $.ui.mount(PANE);
+  const dock = async () => (await ui.find({ key: "memo-dock" }))?.text ?? "";
+  const field = async () => (await ui.find({ type: "Input" }))?.key ?? "";
+  await ui.press({ key: "memo-copy" }); // always drawn: nothing to copy yet
+  expect(toasts.at(-1)).toBe("복사할 한줄메모가 없음");
+  expect(copied).toBe("");
+  expect(await dock()).not.toMatch(/\d+자/);
+
+  // a long memo: an emoji is one character, a newline is one
+  const long = `${"가".repeat(300)}\n둘째 줄 😀`;
+  const k0 = await field();
+  await ui.input({ key: k0, text: long, kind: "change" });
+  expect(await dock()).toContain("307자");
+  expect(await dock()).toContain("저장 안 됨");
+
+  await ui.press({ key: "memo-copy" });
+  expect(copied).toBe(long); // what the field holds, saved or not
+  expect(toasts.at(-1)).toBe("한줄메모 복사됨 · 307자"); // not the whole memo in a toast
+
+  await ui.input({ key: k0, text: `${long}\n` });
+  expect(toasts.at(-1)).toBe("한줄메모 저장됨");
+  expect(await dock()).not.toContain("저장 안 됨");
+  // Enter empties the field: a new one draws the saved memo, the same text resent too
+  const k1 = await field();
+  expect(k1).not.toBe(k0);
+  expect((await ui.find({ key: k1 }))?.props.value).toBe(long);
+  await ui.input({ key: k1, text: long });
+  expect(await field()).not.toBe(k1);
+
+  await ui.input({ key: await field(), text: "  " });
+  expect(toasts.at(-1)).toBe("한줄메모 지움");
+  expect(await ui.find({ key: "memo-copy" })).toBeDefined(); // the ring keeps its stops
+  await ui.unmount();
+});
+
+test("wrapRows counts terminal cells: Hangul and emoji take two", () => {
+  expect(wrapRows("", 10)).toBe(1);
+  expect(wrapRows("a\nb", 10)).toBe(2);
+  expect(wrapRows("가".repeat(40), 76)).toBe(2); // 80 cells
+  expect(wrapRows("😀".repeat(5), 10)).toBe(1);
+  expect(wrapRows("😀".repeat(6), 10)).toBe(2);
+  expect(wrapRows("aaaa bb aaaa", 6)).toBe(3); // by words, not cells (2)
+});
+
+test("the memo grows with its text up to a cap, says what is cut, and edits full width between lit rules", async ($, on) => {
+  engine(on);
+  mock.env(on, { HOME: "/Users/me" });
+  on("session.cwd", () => ({ value: "/Users/me/toys" }));
+  on("session.root", () => ({ value: "/Users/me/toys" }));
+  on("session.repo", () => ({ value: null }));
+  on("session.messages", () => ({ value: [] }));
+  on("fs.read", () => ({ value: "" }));
+  on("ui.focus", () => ({}));
+  await start($);
+  await call($, Q_TOOL, { action: "clear" });
+
+  const focused = { ...PANE, props: { ...PANE.props, isFocused: true } };
+  const ui = await $.ui.mount(focused);
+  const field = async () => (await ui.find({ type: "Input" }))!;
+  const dock = async () => (await ui.find({ key: "memo-dock" }))!;
+  const heavy = () => ui.find({ type: "Text", text: /━{10}/ });
+  expect((await field()).props.rows).toBe(3);
+  expect((await field()).props.autoFocus).toBe(true); // the pane's keyboard lands on it
+
+  // 2280 cells: 30 rows in the frame's 76, more at the 59 left beside the hint
+  await ui.input({ key: (await field()).key!, text: "가".repeat(38 * 30), kind: "change" });
+  expect((await field()).props.rows).toBe(10);
+  expect((await dock()).text).toContain("▾ 20줄 더");
+  expect(await heavy()).toBeUndefined();
+  expect((await dock()).props.borderStyle).toBe("round"); // a card while viewing
+
+  // the ring on the field: the frame gives way to heavy lit rules, the way out,
+  // no cut marker (it scrolls), the same height (a resized field loses the ring)
+  const ring = (element: string) =>
+    $.ui.focus({
+      component: "Pane",
+      requestId: "pinboard",
+      element,
+      origin: { kind: "person" },
+    });
+  await ring((await field()).key!);
+  expect((await heavy())?.props.color).toBe("suggestion");
+  expect((await dock()).text).toContain("한줄메모 편집 중");
+  expect((await dock()).text).toContain("저장 안 됨");
+  expect((await dock()).text).toContain("Esc 나가기");
+  expect((await dock()).text).not.toContain("줄 더");
+  expect((await field()).props.rows).toBe(10);
+  expect((await dock()).props.borderStyle).toBeUndefined(); // nothing narrows the field
+
+  // the ring moves on: back to the card
+  await ring("memo-copy");
+  expect(await heavy()).toBeUndefined();
+  expect((await dock()).props.borderStyle).toBe("round");
+  expect((await dock()).text).not.toContain("한줄메모 편집 중");
+  await ui.unmount();
+
+  // inline: a lower cap
+  const inline = await $.ui.mount({
+    ...PANE,
+    props: { ...PANE.props, placement: "inline" },
+  });
+  await inline.press({ key: "memo-toggle" });
+  expect((await inline.find({ type: "Input" }))?.props.rows).toBe(6);
+  await inline.unmount();
+});
+
+test("an unsaved memo is kept in the store as typed and comes back in a new process", async ($, on) => {
+  const store: Record<string, unknown> = {};
+  engine(on, store);
+  mock.env(on, { HOME: "/Users/me" });
+  on("session.cwd", () => ({ value: "/Users/me/toys" }));
+  on("session.root", () => ({ value: "/Users/me/toys" }));
+  on("session.repo", () => ({ value: null }));
+  on("session.messages", () => ({ value: [] }));
+  on("fs.read", () => ({ value: "" }));
+  await start($);
+  await call($, Q_TOOL, { action: "clear" });
+
+  const ui = await $.ui.mount(PANE);
+  const key = async () => (await ui.find({ type: "Input" }))?.key ?? "";
+  await ui.input({ key: await key(), text: "쓰는 중", kind: "change" });
+  expect(store["draft:s1"]).toBe("쓰는 중");
+  await ui.input({ key: await key(), text: "쓰는 중" });
+  expect(store["draft:s1"]).toBeUndefined();
+  expect(store["pins:s1"]).toEqual([{ kind: "note", text: "쓰는 중" }]);
+  await ui.unmount();
+});
+
+test("a draft the store kept shows on start, marked unsaved", async ($, on) => {
+  engine(on, { "draft:s1": "이어 쓰던 글" });
+  mock.env(on, { HOME: "/Users/me" });
+  on("session.cwd", () => ({ value: "/Users/me/toys" }));
+  on("session.root", () => ({ value: "/Users/me/toys" }));
+  on("session.repo", () => ({ value: null }));
+  on("session.messages", () => ({ value: [] }));
+  on("fs.read", () => ({ value: "" }));
+  await start($);
+  await call($, Q_TOOL, { action: "clear" });
+
+  const ui = await $.ui.mount(PANE);
+  expect((await ui.find({ type: "Input" }))?.props.value).toBe("이어 쓰던 글");
+  expect((await ui.find({ key: "memo-dock" }))?.text).toContain("저장 안 됨");
+  await ui.unmount();
+});
+
+test("start drops the keys of sessions unstarted for 30 days, never its own", async ($, on) => {
+  const day = 86_400_000;
+  const now = 0; // the mock clock's start
+  const note = [{ kind: "note", text: "m" }];
+  const store: Record<string, unknown> = {
+    "pins:old": note,
+    "draft:old": "x",
+    "pins:fresh": note,
+    "pins:unseen": note,
+    "pins:s1": note, // this session, however old
+    seen: { old: now - 31 * day, fresh: now - day, s1: now - 99 * day },
+  };
+  engine(on, store);
+  await start($);
+
+  expect(store["pins:old"]).toBeUndefined();
+  expect(store["draft:old"]).toBeUndefined();
+  expect(store["pins:fresh"]).toEqual(note);
+  expect(store["pins:unseen"]).toEqual(note);
+  expect(store["pins:s1"]).toEqual(note);
+  expect(store.seen).toEqual({ fresh: now - day, unseen: now, s1: now });
+});
+
+test("an inline memo folded and unfolded keeps what was typed but not saved", async ($, on) => {
+  engine(on);
+  mock.env(on, { HOME: "/Users/me" });
+  on("session.cwd", () => ({ value: "/Users/me/toys" }));
+  on("session.root", () => ({ value: "/Users/me/toys" }));
+  on("session.repo", () => ({ value: null }));
+  on("session.messages", () => ({ value: [] }));
+  on("fs.read", () => ({ value: "" }));
+  await start($);
+  await call($, Q_TOOL, { action: "clear" });
+
+  const ui = await $.ui.mount({
+    ...PANE,
+    props: { ...PANE.props, placement: "inline" },
+  });
+  await ui.press({ key: "memo-toggle" });
+  const k = (await ui.find({ type: "Input" }))?.key ?? "";
+  await ui.input({ key: k, text: "쓰다 만 메모", kind: "change" });
+  await ui.press({ key: "memo-toggle" });
+  expect(await ui.find({ type: "Input" })).toBeUndefined();
+  await ui.press({ key: "memo-toggle" });
+  expect((await ui.find({ type: "Input" }))?.props.value).toBe("쓰다 만 메모");
   await ui.unmount();
 });
 
@@ -382,9 +608,9 @@ test("an inline pane: one row a section, empty ones left out, the memo folded un
   expect(await ui.find({ type: "Text", text: "1/2" })).toBeDefined();
   expect((await ui.find({ key: "cp:pin0" }))?.text).toBe("스펙");
 
-  expect(await ui.find({ key: "memo" })).toBeUndefined();
+  expect(await ui.find({ type: "Input" })).toBeUndefined();
   await ui.press({ key: "memo-toggle" });
-  expect(await ui.find({ key: "memo" })).toBeDefined();
+  expect(await ui.find({ type: "Input" })).toBeDefined();
   await ui.unmount();
 });
 

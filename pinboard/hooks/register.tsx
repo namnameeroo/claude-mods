@@ -91,6 +91,18 @@ const snapA = atom(
 const historyA = atom({ plugin: "pinboard", key: "history" } as const, false);
 const foldedA = atom({ plugin: "pinboard", key: "folded" } as const, false);
 const memoA = atom({ plugin: "pinboard", key: "memo" } as const, false);
+// the field draws it back, so a memo folded or a pane reopened keeps unsaved text
+const draftA = atom(
+  { plugin: "pinboard", key: "draft" } as const,
+  null as string | null,
+);
+// Enter empties the field and the saved text is the one it last drew, so only
+// a new field (a new key) shows the memo again
+const memoSavesA = atom({ plugin: "pinboard", key: "memoSaves" } as const, 0);
+const memoFocusA = atom(
+  { plugin: "pinboard", key: "memoFocus" } as const,
+  false,
+);
 const paneFoldedA = atom(
   { plugin: "pinboard", key: "paneFolded" } as const,
   false,
@@ -265,8 +277,7 @@ const toggleItem = (pins: Pin[], kind: ListKind, i: number): Pin[] => {
 };
 
 // fn runs on the latest pins (update retries it when another write lands first),
-// then the store mirrors them for --resume.
-// ponytail: one store key per session, never pruned; prune by age if the 4 MiB store fills.
+// then the store mirrors them for --resume. One key per session; prune drops old ones.
 // Two racing edits may land their store writes out of order (the atom stays right):
 // chain the writes if a resumed session ever shows a stale list.
 async function editPins($: EngineInterface, fn: (cur: Pin[]) => Pin[]) {
@@ -274,6 +285,35 @@ async function editPins($: EngineInterface, fn: (cur: Pin[]) => Pin[]) {
   const key = `pins:${await $.session.id()}`;
   await (next.length ? $.store.set(key, next) : $.store.delete(key));
   return next;
+}
+
+// The memo as typed outlives a restart: written on each change, chained so the
+// last keystroke lands last; null (Enter) deletes it.
+let draftWrites: Promise<unknown> = Promise.resolve();
+async function storeDraft($: EngineInterface, text: string | null) {
+  const key = `draft:${await $.session.id()}`;
+  draftWrites = draftWrites
+    .then(() => (text === null ? $.store.delete(key) : $.store.set(key, text)))
+    .catch(() => undefined);
+  return draftWrites;
+}
+
+// Each session's keys go once it has gone unstarted for KEEP_DAYS.
+// ponytail: aged from the session's last start; a key never seen starts its clock now
+const KEEP_DAYS = 30;
+async function prune($: EngineInterface, now: number) {
+  const sid = await $.session.id();
+  const old = ((await $.store.get("seen")) ?? {}) as Record<string, number>;
+  const seen: Record<string, number> = {};
+  for (const k of await $.store.keys()) {
+    const s = /^(?:pins|draft):(.+)$/.exec(k)?.[1];
+    if (!s) continue;
+    const at = s === sid ? now : (old[s] ?? now);
+    if (now - at > KEEP_DAYS * 86_400_000) await $.store.delete(k);
+    else seen[s] = at;
+  }
+  seen[sid] = now;
+  await $.store.set("seen", seen);
 }
 
 // A tool's edit: its refusal depends on the input alone, so it is judged on no
@@ -290,12 +330,44 @@ async function applyPins(
 const clearQuestions = ($: EngineInterface) =>
   editPins($, (cur) => cur.filter((p) => p.kind !== "question"));
 
-// a hot reload keeps the atom; a new process (--resume) reads the store
+// a hot reload keeps the atoms; a new process (--resume) reads the store
 async function restore($: EngineInterface) {
+  const sid = await $.session.id();
+  if ((await read($, draftA)) === null) {
+    const d = await $.store.get(`draft:${sid}`);
+    if (typeof d === "string") await update($, draftA, () => d);
+  }
   if ((await read($, pinsA)).length) return;
-  const saved = await $.store.get(`pins:${await $.session.id()}`);
+  const saved = await $.store.get(`pins:${sid}`);
   if (Array.isArray(saved)) await update($, pinsA, () => saved as Pin[]);
 }
+
+// Terminal cells a text takes: Hangul, CJK, fullwidth forms and emoji are two.
+const WIDE =
+  /[\u1100-\u115f\u2e80-\ua4cf\uac00-\ud7a3\uf900-\ufaff\ufe30-\ufe4f\uff00-\uff60\uffe0-\uffe6]|\p{Extended_Pictographic}/u;
+const cells = (s: string) =>
+  [...s].reduce((n, c) => n + (WIDE.test(c) ? 2 : 1), 0);
+// Rows a text wraps to at width, word by word as the field wraps it; a word
+// wider than a row breaks across rows.
+export const wrapRows = (text: string, width: number) => {
+  const w = Math.max(1, width);
+  let n = 0; // not `rows`: the loader reads that name as the drawing helper
+  for (const line of text.split("\n")) {
+    n++;
+    let col = 0;
+    for (const word of line.split(" ")) {
+      const c = cells(word);
+      if ((col ? col + 1 : 0) + c <= w) {
+        col += (col ? 1 : 0) + c;
+        continue;
+      }
+      if (col) n++;
+      n += Math.max(0, Math.ceil(c / w) - 1);
+      col = c % w || (c ? w : 0);
+    }
+  }
+  return n;
+};
 
 // ---------- data ----------
 
@@ -821,6 +893,7 @@ export const register: Register = (on, options) => {
       description: "Delete the pinned questions list",
     });
     await restore($);
+    await prune($, await $.clock.now());
     void sync($, jiraKey);
     $.clock.every(60_000, () => void sync($, jiraKey));
     return next(e);
@@ -896,6 +969,14 @@ export const register: Register = (on, options) => {
     return { value: undefined };
   });
 
+  // where the pane's ring goes: the memo draws as an editor while it holds it
+  on("ui.focus", { requestId: PANE }, async ($, e, next) => {
+    const r = await next(e);
+    if (!r.deny)
+      await update($, memoFocusA, () => !!e.element?.startsWith("memo:"));
+    return r;
+  });
+
   on("command.run", { command: "pinboard" }, async ($) => {
     await update($, paneFoldedA, () => false);
     await $.ui.open(PANE_OPEN);
@@ -914,8 +995,10 @@ export const register: Register = (on, options) => {
   // So the end empties the pins and the next turn loads the new session's.
   // ponytail: a resumed session's pins show from its first prompt on, not before
   on("session.end", async ($, e, next) => {
-    if (e.reason === "clear" || e.reason === "resume")
+    if (e.reason === "clear" || e.reason === "resume") {
       await update($, pinsA, () => []);
+      await update($, draftA, () => null);
+    }
     return next(e);
   });
 
@@ -965,12 +1048,24 @@ export const register: Register = (on, options) => {
       return <Text dimColor>pinboard: no mobile layout</Text>;
     }
     const { Box, Text, Button, Input, Link } = $.ui.resolve(e);
-    const [s, pins, history, memoOpen, paneFolded] = await Promise.all([
+    const [
+      s,
+      pins,
+      history,
+      memoOpen,
+      paneFolded,
+      draft,
+      memoSaves,
+      memoFocus,
+    ] = await Promise.all([
       read($, snapA),
       read($, pinsA),
       read($, historyA),
       read($, memoA),
       read($, paneFoldedA),
+      read($, draftA),
+      read($, memoSavesA),
+      read($, memoFocusA),
     ]);
     if (!s)
       return (
@@ -988,6 +1083,21 @@ export const register: Register = (on, options) => {
       (d) => !docPins.some((p) => p.ref === d.path),
     );
     const note = pins.find((p) => p.kind === "note")?.text ?? "";
+    const memo = draft ?? note; // what the field holds
+    const memoLen = [...memo].length; // code points: an emoji is one
+    const isUnsaved = draft !== null && draft.trim() !== note;
+    const isEditing = e.props.isFocused && memoFocus;
+    // grows with the text up to a cap; the field scrolls past it.
+    // ponytail: fixed caps; from bodyRows if a short window needs less
+    // A focused field sizes its text to the pane's whole width, less the
+    // engine's hint beside it (` ⏎ 저장 · \⏎ new line`, about 21 cells),
+    // whatever holds it: inside a frame its rows overflow and draw as one cut
+    // row (claude-code#106637). So it is framed like a card only while not
+    // focused, and the height is sized for the focused width and never changes
+    // on focus: a field whose rows change as it takes the ring loses the keyboard.
+    const editRows = wrapRows(memo, e.props.bodyColumns - 21);
+    const viewRows = wrapRows(memo, e.props.bodyColumns - 4); // in the frame
+    const memoRows = Math.min(isDock ? 10 : 6, Math.max(3, editRows));
     const nLinks = s.prs.length + s.jira.length + s.links.length;
     const nDocs = docPins.length + autoDocs.length;
 
@@ -1134,7 +1244,7 @@ export const register: Register = (on, options) => {
               dimColor
               onPress={() => void update($, memoA, (o) => !o)}
             >
-              {`${memoOpen ? "▾" : "▸"} 메모${note ? "*" : ""}`}
+              {`${memoOpen ? "▾" : "▸"} 한줄메모${note ? "*" : ""}`}
             </Button>
           )}
           <Button
@@ -1162,31 +1272,87 @@ export const register: Register = (on, options) => {
           ))}
         </>,
       );
+    // A card's frame while viewing; editing (the ring on the field), heavy lit
+    // rules above and below and the pane's whole width (see editRows). The copy
+    // button is always drawn: an element appearing before the field as the
+    // first letter lands (or leaving as the last goes) takes the keyboard off it.
+    const memoRule = (
+      <Text
+        color={isEditing ? "suggestion" : "remember"}
+        dimColor={!isEditing}
+        wrap="truncate-end"
+      >
+        {(isEditing ? "━" : "─").repeat(e.props.bodyColumns)}
+      </Text>
+    );
     const memoBox = (
       <Box
         key="memo-dock"
         flexDirection="column"
         marginTop={1}
-        borderStyle="single"
-        borderColor="remember"
-        paddingX={1}
+        {...(isEditing
+          ? {}
+          : { borderStyle: "round", borderDimColor: true, paddingX: 1 })}
       >
+        {isEditing ? memoRule : null}
         <Box justifyContent="space-between">
-          <Text bold color={TITLE}>
-            메모
-          </Text>
-          <Text dimColor>Enter 저장</Text>
+          <Box gap={2}>
+            <Text bold color={isEditing ? "suggestion" : TITLE}>
+              {isEditing ? "한줄메모 편집 중" : "한줄메모"}
+            </Text>
+            {memoLen ? <Text dimColor>{`${memoLen}자`}</Text> : null}
+          </Box>
+          <Box gap={2}>
+            {isUnsaved ? <Text color="warning">저장 안 됨</Text> : null}
+            {isEditing ? <Text dimColor>Esc 나가기</Text> : null}
+            <Button
+              key="memo-copy"
+              plain
+              dimColor
+              onPress={async (press) => {
+                if (!memoLen) return $.ui.toast("복사할 한줄메모가 없음");
+                const r = await $.ui.copy({
+                  text: memo,
+                  surface: press.surface,
+                });
+                $.ui.toast(
+                  r.isCopied
+                    ? `한줄메모 복사됨 · ${memoLen}자`
+                    : `copy failed: ${r.reason}`,
+                );
+              }}
+            >
+              복사
+            </Button>
+          </Box>
         </Box>
         <Input
-          key="memo"
-          rows={3}
+          key={`memo:${memoSaves}`}
+          rows={memoRows}
+          // the pane's keyboard lands here: the ring's move then says so
+          // (ui.focus), where an Esc and a return raise nothing
+          autoFocus
+          submitLabel="저장"
           placeholder="이 세션에서 기억할 것…"
-          value={note}
-          onSubmit={(t) => {
-            void editPins($, (cur) => setNote(cur, t));
-            $.ui.toast("메모 저장됨");
+          value={memo}
+          onInput={(t) => {
+            void update($, draftA, () => t);
+            void storeDraft($, t);
+          }}
+          onSubmit={async (t) => {
+            await editPins($, (cur) => setNote(cur, t));
+            await storeDraft($, null);
+            await update($, draftA, () => null);
+            await update($, memoSavesA, (n) => n + 1);
+            $.ui.toast(t.trim() ? "한줄메모 저장됨" : "한줄메모 지움");
           }}
         />
+        {!isEditing && viewRows > memoRows ? (
+          <Box justifyContent="flex-end">
+            <Text dimColor>{`▾ ${viewRows - memoRows}줄 더`}</Text>
+          </Box>
+        ) : null}
+        {isEditing ? memoRule : null}
       </Box>
     );
 

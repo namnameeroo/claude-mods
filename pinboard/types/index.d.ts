@@ -101,6 +101,9 @@ declare module "claude-code" {
       history: boolean;
       folded: boolean; // the questions band shows its header alone
       memo: boolean; // an inline pane shows the memo
+      draft: string | null; // the memo as typed since the last Enter; null = as saved
+      memoSaves: number; // keys the field: Enter empties it, a new one draws the saved memo
+      memoFocus: boolean; // the pane's focus ring is on the memo field
       paneFolded: boolean; // an inline pane shows one row
     };
   }
