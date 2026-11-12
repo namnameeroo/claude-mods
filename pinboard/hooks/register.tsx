@@ -396,18 +396,12 @@ export function scan(
   branch: string,
   jiraKey: RegExp | null = null,
 ) {
-  // prompts and replies: what the session talked about. Tool output (a grep over
+  // message text: prompts, replies and what the engine writes into the chat
+  // (slash command args, `!` output, task notices). Tool output (a grep over
   // fixtures, a branch list) is text that flowed past and would crowd it out.
   const said = msgs.map((m) => m.text).join("\n");
-  const corpus = msgs
-    .flatMap((m) => [
-      m.text,
-      ...m.toolUses.map((t) => t.text ?? ""),
-      ...(m.toolResults ?? []).map((r) => r.text ?? ""),
-    ])
-    .join("\n");
 
-  // every PR this session mentioned: URLs in prompts and replies
+  // the last 5 PRs mentioned in message text
   const prRefs = recent(
     [...said.matchAll(/github\.com\/([\w.-]+\/[\w.-]+)\/pull\/(\d+)/g)].map(
       (m) => `${m[1]}#${m[2]}`,
@@ -419,7 +413,7 @@ export function scan(
     ? recent(`${said} ${branch}`.match(jiraKey) ?? [], 3)
     : [];
   const links = recent(
-    [...said.matchAll(/https?:\/\/[^\s)>\]"'`]+/g)]
+    [...said.matchAll(/https?:\/\/[^\s)<>\]"'`]+/g)] // `<`: a closing tag right after
       .map((m) => m[0])
       .filter(
         (u) =>
@@ -462,7 +456,15 @@ export function scan(
   const docs = [...docMap.values()].slice(-6);
 
   // background Bash: its result names the task and output file; a later
-  // <task-notification> carrying its tool-use-id says how it ended
+  // <task-notification> carrying its tool-use-id says how it ended. The notice
+  // can arrive inside a tool result, so this reads tool output too.
+  const corpus = msgs
+    .flatMap((m) => [
+      m.text,
+      ...m.toolUses.map((t) => t.text ?? ""),
+      ...(m.toolResults ?? []).map((r) => r.text ?? ""),
+    ])
+    .join("\n");
   const ended = new Map<string, string>(
     [
       ...corpus.matchAll(

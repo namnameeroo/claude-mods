@@ -47,7 +47,7 @@ Each section is a card. An empty one says `없음` (none); the number at its top
 | **백그라운드** (background) | Shell commands Claude ran in the background: a hollow yellow circle while running, a dim filled circle once done, a red x if it failed (a dim x if it was stopped); a `localhost:<port>` link when it serves one. `실행 1/2` = 1 of 2 running | The session's background Bash calls; the port from their output or command | Copy the command (the port opens in a browser) |
 | **작업** (work) | What you asked for, as a tree: the first request at the root, later ones under the task they refine. The current one is lit | Claude's `record_intent` calls | — |
 | **다음 할 일** (next steps) | A checklist Claude leaves when it finishes a piece of work, with done/total | Claude's `pin_next_steps` calls | Check or uncheck a step |
-| **PR · 링크** (PRs and links) | The last 5 GitHub PRs the session mentioned, with state, CI, review and comment count; your Jira keys; Figma, Notion, Atlassian and Claude artifact links | URLs and keys in your prompts and Claude's replies (not tool output), plus the branch name for a Jira key; `gh pr view` for the PR states | Open it |
+| **PR · 링크** (PRs and links) | The last 5 GitHub PRs the session mentioned, with state, CI, review and comment count; your Jira keys; Figma, Notion, Atlassian and Claude artifact links | URLs and keys in the conversation's messages: your prompts, Claude's replies and what the engine writes there (slash command arguments, `!` output, background-task notices), plus the branch name for a Jira key. Not tool results. `gh pr view` for the PR states | Open it |
 | **문서** (docs) | Pinned docs first (a pin icon, the title Claude gave it), then the `.md` files Claude read or wrote, tagged `repo`, `out` (outside the repo) or `tmp` | Claude's `pin_doc` calls; Read and Write calls | Open a pinned doc |
 | **한줄메모** (memo) | Your own note for the session, with its length (`N자`) and `저장 안 됨` while what you typed is not saved. It grows with the text to 10 rows (6 inline), then `▾ N줄 더` says how much is below. It is framed like the other cards; while you edit it (`한줄메모 편집 중`) the frame gives way to heavy lit rules above and below and the text takes the pane's whole width | You: `ctrl+x tab` puts you in it; type, then Enter (`⏎ 저장`); an empty memo and Enter deletes it; Esc leaves it | Copy it whole (`복사`) |
 
@@ -136,8 +136,8 @@ Update with `claude plugin update pinboard@claude-mods` (restart Claude Code to 
 | --- | --- |
 | No pane | Type `/pinboard`. It opens by itself only in a fullscreen terminal at least 144 columns wide. |
 | Boxes or blanks instead of icons | Set a Nerd Font as your terminal's font. |
-| No PRs in `PR · 링크` | Run `gh auth status`; the PR must also appear as a `github.com/<owner>/<repo>/pull/<n>` URL in a prompt or a reply. A URL that shows up only in tool output (a `gh pr create` result Claude did not repeat) is not picked. |
-| No Jira keys | Set both `jiraBase` and `jiraProjects`. |
+| No PRs in `PR · 링크` | Run `gh auth status`; the PR must also appear as a `github.com/<owner>/<repo>/pull/<n>` URL in a prompt or a reply. A URL that shows up only in tool output (a `gh pr create` result or a subagent's report that Claude did not repeat) is not picked. |
+| No Jira keys | Set both `jiraBase` and `jiraProjects`; the key must also be in a prompt, a reply or the branch name. |
 | Nothing at all | Start `claude --debug` and look for lines beginning `pinboard:`. |
 
 ## Develop
