@@ -22,6 +22,7 @@ import type {
   Doc,
   Node,
   Bg,
+  Span,
 } from "../types";
 
 const PANE = "pinboard";
@@ -107,6 +108,9 @@ const paneFoldedA = atom(
   { plugin: "pinboard", key: "paneFolded" } as const,
   false,
 );
+const actA = atom({ plugin: "pinboard", key: "act" } as const, [] as Span[], {
+  shape: "act-1",
+});
 
 // Pure: whether a close folds the pane instead. The person's close mark (or
 // ctrl+x x) on an inline pane, which sits over the transcript, folds it to one
@@ -306,7 +310,7 @@ async function prune($: EngineInterface, now: number) {
   const old = ((await $.store.get("seen")) ?? {}) as Record<string, number>;
   const seen: Record<string, number> = {};
   for (const k of await $.store.keys()) {
-    const s = /^(?:pins|draft):(.+)$/.exec(k)?.[1];
+    const s = /^(?:pins|draft|act):(.+)$/.exec(k)?.[1];
     if (!s) continue;
     const at = s === sid ? now : (old[s] ?? now);
     if (now - at > KEEP_DAYS * 86_400_000) await $.store.delete(k);
@@ -330,12 +334,56 @@ async function applyPins(
 const clearQuestions = ($: EngineInterface) =>
   editPins($, (cur) => cur.filter((p) => p.kind !== "question"));
 
+const ACT_SLOT = 900_000; // fifteen minutes
+const ACT_SLOTS = 32; // eight hours
+const BLOCKS = "▁▂▃▄▅▆▇█";
+// The braille cat at the row's "now" end: it walks while a turn runs, sits
+// for a cell (fifteen minutes) after one ends, then loafs
+const CAT = { walk: "⢳⢧⠤⢤⢤⠂", sit: "⢳⣧⣄⡠", loaf: "⣴⣴⣤⣄" };
+export const catPose = (spans: readonly Span[], now: number) => {
+  if (spans.some(([, e]) => e === null)) return CAT.walk;
+  const last = Math.max(-Infinity, ...spans.map(([, e]) => e ?? 0));
+  return now - last < ACT_SLOT ? CAT.sit : CAT.loaf;
+};
+// Pure: the 8 hours before `now` as 32 fifteen-minute cells, each its share of time
+// in a turn as a block (any at all shows), ⡀ (a dot on the floor) for none
+export const activity = (spans: readonly Span[], now: number) =>
+  Array.from({ length: ACT_SLOTS }, (_, i) => {
+    const lo = now - (ACT_SLOTS - i) * ACT_SLOT;
+    const busy = spans.reduce(
+      (t, [s, e]) =>
+        t + Math.max(0, Math.min(e ?? now, lo + ACT_SLOT) - Math.max(s, lo)),
+      0,
+    );
+    return busy > 0
+      ? BLOCKS[Math.min(7, Math.ceil((busy / ACT_SLOT) * 8) - 1)]
+      : "⡀";
+  }).join("");
+
+// A main turn opens a span and its end closes it with the engine's duration.
+// Only closed spans of the last 8 hours go to the store: an open one would
+// outlive a crash. Mirrored per session like the pins, so --resume keeps them.
+async function markTurn($: EngineInterface, durationMs?: number) {
+  const now = await $.clock.now();
+  const next = await update($, actA, (cur): Span[] => [
+    ...cur.filter(([, e]) => e !== null && e > now - ACT_SLOTS * ACT_SLOT),
+    durationMs === undefined ? [now, null] : [now - durationMs, now],
+  ]);
+  const done = next.filter(([, e]) => e !== null);
+  const key = `act:${await $.session.id()}`;
+  await (done.length ? $.store.set(key, done) : $.store.delete(key));
+}
+
 // a hot reload keeps the atoms; a new process (--resume) reads the store
 async function restore($: EngineInterface) {
   const sid = await $.session.id();
   if ((await read($, draftA)) === null) {
     const d = await $.store.get(`draft:${sid}`);
     if (typeof d === "string") await update($, draftA, () => d);
+  }
+  if (!(await read($, actA)).length) {
+    const a = await $.store.get(`act:${sid}`);
+    if (Array.isArray(a)) await update($, actA, () => a as Span[]);
   }
   if ((await read($, pinsA)).length) return;
   const saved = await $.store.get(`pins:${sid}`);
@@ -1003,17 +1051,25 @@ export const register: Register = (on, options) => {
     if (e.reason === "clear" || e.reason === "resume") {
       await update($, pinsA, () => []);
       await update($, draftA, () => null);
+      await update($, actA, () => []);
     }
     return next(e);
   });
 
+  // a record that fails costs the activity row alone, never the turn
   on("turn.start", async ($, e, next) => {
-    if (e.agentId === undefined) await restore($);
+    if (e.agentId === undefined) {
+      await restore($);
+      await markTurn($).catch(() => undefined);
+    }
     return next(e);
   });
 
   on("turn.complete", async ($, e, next) => {
-    if (e.agentId === undefined) void sync($, jiraKey);
+    if (e.agentId === undefined) {
+      await markTurn($, e.durationMs).catch(() => undefined);
+      void sync($, jiraKey);
+    }
     return next(e);
   });
 
@@ -1062,6 +1118,7 @@ export const register: Register = (on, options) => {
       draft,
       memoSaves,
       memoFocus,
+      act,
     ] = await Promise.all([
       read($, snapA),
       read($, pinsA),
@@ -1071,6 +1128,7 @@ export const register: Register = (on, options) => {
       read($, draftA),
       read($, memoSavesA),
       read($, memoFocusA),
+      read($, actA),
     ]);
     if (!s)
       return (
@@ -1527,6 +1585,15 @@ export const register: Register = (on, options) => {
           "세션",
           `⟳ ${new Date(s.at).toTimeString().slice(0, 5)}`,
           <Box flexDirection="column">
+            {/* time in a turn, fifteen minutes a cell, now at the right; moves with ⟳ */}
+            {act.length ? (
+              <Text key="act">
+                {activity(act, s.at)}{" "}
+                <Text color="claude">{catPose(act, s.at)}</Text>
+              </Text>
+            ) : null}
+            <Copy k="sid" text={s.sid} label={`sid ${s.sid}`} dim />
+            <Copy k="cwd" text={s.cwd} label={tilde(s.cwd, home)} />
             {s.branch ? (
               <Box gap={2}>
                 <Copy
@@ -1544,10 +1611,6 @@ export const register: Register = (on, options) => {
                 ) : null}
               </Box>
             ) : null}
-            <Box columnGap={2} flexWrap="wrap">
-              <Copy k="cwd" text={s.cwd} label={tilde(s.cwd, home)} />
-              <Copy k="sid" text={s.sid} label={`sid ${s.sid}`} dim />
-            </Box>
           </Box>,
         )}
 

@@ -43,7 +43,7 @@ Each section is a card. An empty one says `없음` (none); the number at its top
 
 | Section | What it shows | Where it comes from | Press it to |
 | --- | --- | --- | --- |
-| **세션** (session) | Branch, worktree, folder, session id, and `⟳` the time of the last refresh | `git` in the session's folder | Copy that value |
+| **세션** (session) | An activity row (the last 8 hours in fifteen-minute cells, each shaded by how long Claude was working in it; `⡀` none, now at the right, where a small braille cat walks while Claude works, sits for fifteen minutes after, then loafs), then the session id, folder, branch and worktree; `⟳` the time of the last refresh | `git` in the session's folder; the start and end of each of the session's turns | Copy that value |
 | **백그라운드** (background) | Shell commands Claude ran in the background: a hollow yellow circle while running, a dim filled circle once done, a red x if it failed (a dim x if it was stopped); a `localhost:<port>` link when it serves one. `실행 1/2` = 1 of 2 running | The session's background Bash calls; the port from their output or command | Copy the command (the port opens in a browser) |
 | **작업** (work) | What you asked for, as a tree: the first request at the root, later ones under the task they refine. The current one is lit | Claude's `record_intent` calls | — |
 | **다음 할 일** (next steps) | A checklist Claude leaves when it finishes a piece of work, with done/total | Claude's `pin_next_steps` calls | Check or uncheck a step |
@@ -96,7 +96,7 @@ The model decides when to call them, so a section can stay empty for a while. As
 ### What it keeps
 
 - `~/.claude/intent/<session id>.json`: the work tree `record_intent` writes (your task descriptions, in plain text).
-- The plugin's store, `~/.claude/plugins/store/pinboard_*.json`: each session's pins and memo (on Enter), and the memo as you type it until Enter, so `--resume` brings them back. A session's entries are deleted once it has not been started for 30 days.
+- The plugin's store, `~/.claude/plugins/store/pinboard_*.json`: each session's pins and memo (on Enter), the memo as you type it until Enter, and the start and end times of its turns over the last 8 hours, so `--resume` brings them back. A session's entries are deleted once it has not been started for 30 days.
 
 The intent files are not cleaned up automatically; delete them or uninstall the plugin when you no longer want them.
 

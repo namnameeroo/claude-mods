@@ -93,6 +93,9 @@ export type Snap = {
   at: number;
 };
 
+// a main turn as [start, end] in ms; end null while it runs
+export type Span = [number, number | null];
+
 declare module "claude-code" {
   interface PluginState {
     pinboard: {
@@ -105,6 +108,7 @@ declare module "claude-code" {
       memoSaves: number; // keys the field: Enter empties it, a new one draws the saved memo
       memoFocus: boolean; // the pane's focus ring is on the memo field
       paneFolded: boolean; // an inline pane shows one row
+      act: Shaped<Span[]>; // the session's turns of the last 8 hours
     };
   }
 }

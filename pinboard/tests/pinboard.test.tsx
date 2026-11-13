@@ -2,7 +2,9 @@ import { expect, test, mock } from "claude-code/testing";
 import type { On, SessionMessage } from "claude-code";
 import type { Engine } from "claude-code/testing";
 import {
+  activity,
   applyDoc,
+  catPose,
   applyIntent,
   jiraMatcher,
   layoutTree,
@@ -1154,6 +1156,68 @@ test("R7 a task notification inside a tool result still ends its task", () => {
     },
   ] as unknown as SessionMessage[];
   expect(scan(msgs, "/repo", "main").bg[0]?.status).toBe("completed");
+});
+
+test("activity: the last 8 hours as 32 fifteen-minute cells, each its share of time in a turn", () => {
+  const M = 60_000;
+  const now = 480 * M;
+  expect(activity([], now)).toBe("⡀".repeat(32));
+  const bar = activity(
+    [
+      [0, 15 * M], // the first cell, all of it
+      [-60 * M, -30 * M], // before the window: left out
+      [150 * M, 157.5 * M], // half a cell
+      [300 * M, 300 * M + 1000], // a second still shows
+      [457.5 * M, null], // running: counts up to now
+    ],
+    now,
+  );
+  expect(bar).toBe(
+    "█" + "⡀".repeat(9) + "▄" + "⡀".repeat(9) + "▁" + "⡀".repeat(9) + "▄█",
+  );
+});
+
+test("catPose: walks while a turn runs, sits for a cell (15 minutes) after one, then loafs", () => {
+  const M = 60_000;
+  expect(catPose([[0, null]], 5 * M)).toBe("⢳⢧⠤⢤⢤⠂");
+  expect(catPose([[0, 2 * M]], 5 * M)).toBe("⢳⣧⣄⡠");
+  expect(catPose([[0, 2 * M]], 30 * M)).toBe("⣴⣴⣤⣄");
+});
+
+test("a main turn's span is kept per session; a subagent's is not; /clear starts over", async ($, on) => {
+  const store: Record<string, unknown> = {};
+  let sid = "s1";
+  engine(on, store, () => sid);
+  on("turn.start", (_, e) => ({ turnId: e.turnId }));
+  on("turn.complete", (_, e) => ({ text: e.answer }));
+  on("session.end", (_, e) => ({ sessionId: e.sessionId }));
+  const done = (turnId: string, durationMs: number, agentId?: string) =>
+    $.turn.complete({
+      answer: "",
+      durationMs,
+      isAborted: false,
+      turnId,
+      agentId,
+      reason: "answer",
+    } as never);
+  await start($);
+
+  await $.turn.start({ text: "a", turnId: "t1" });
+  await $.turn.start({ text: "", turnId: "t2", agentId: "ag" } as never);
+  await done("t2", 120_000, "ag");
+  await done("t1", 300_000); // the mock clock reads 0
+  expect(store["act:s1"]).toEqual([[-300_000, 0]]);
+
+  await $.session.end({
+    reason: "clear",
+    sessionId: sid,
+    resume: { id: sid, sessionId: sid } as never,
+  });
+  sid = "s2";
+  await $.turn.start({ text: "b", turnId: "t3" });
+  await done("t3", 60_000);
+  expect(store["act:s2"]).toEqual([[-60_000, 0]]);
+  expect(store["act:s1"]).toEqual([[-300_000, 0]]); // its own, for --resume
 });
 
 test("P1 the pin tools refuse a subagent: the main conversation's lists stay", async ($, on) => {
