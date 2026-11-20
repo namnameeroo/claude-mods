@@ -6,6 +6,8 @@ Mods for [Claude Code](https://claude.com/claude-code): hooks modules that chang
 | --- | --- |
 | [pinboard](#pinboard) | Keeps a session's loose ends on screen: the questions Claude is waiting on, the work tree, next steps, PRs, docs and a memo. |
 
+Using Orca? Its chat runs Claude Code without a terminal, so mod panes never draw there. [orca-pinboard](https://github.com/namnameeroo/orca-pinboard) shows the same session (branch, background tasks, work tree, PRs, docs, a memo) as an Orca sidebar panel: `orca plugin install namnameeroo/orca-pinboard`.
+
 ## pinboard
 
 In a long session things scroll away: the three questions Claude asked twenty minutes ago, the PR you opened, the spec you said to follow, the dev server it started. pinboard pins them where you can see them, beside the chat or above the prompt, and brings them back when you `--resume`.
@@ -135,6 +137,7 @@ Update with `claude plugin update pinboard@claude-mods` (restart Claude Code to 
 | What you see | Try |
 | --- | --- |
 | No pane | Type `/pinboard`. It opens by itself only in a fullscreen terminal at least 144 columns wide. |
+| No pane in Orca's chat | Orca's chat has no terminal for mod panes. Run `claude` in an Orca terminal, or install [orca-pinboard](https://github.com/namnameeroo/orca-pinboard). |
 | Boxes or blanks instead of icons | Set a Nerd Font as your terminal's font. |
 | No PRs in `PR · 링크` | Run `gh auth status`; the PR must also appear as a `github.com/<owner>/<repo>/pull/<n>` URL in a prompt or a reply. A URL that shows up only in tool output (a `gh pr create` result or a subagent's report that Claude did not repeat) is not picked. |
 | No Jira keys | Set both `jiraBase` and `jiraProjects`; the key must also be in a prompt, a reply or the branch name. |
